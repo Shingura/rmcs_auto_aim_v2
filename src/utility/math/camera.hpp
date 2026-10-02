@@ -28,5 +28,6 @@ struct CameraFeature {
 };
 
 auto compute_distance2cam_x(const Transform& cam, const Point3d& point) -> double;
+auto compute_angle2cam_x(const Transform& cam, const Point3d& point) -> double;
 
 } // namespace rmcs::util

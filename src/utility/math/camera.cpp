@@ -52,4 +52,17 @@ auto compute_distance2cam_x(const Transform& cam, const Point3d& point) -> doubl
 
     return std::sqrt(in_cam.y() * in_cam.y() + in_cam.z() * in_cam.z());
 }
+
+// 计算目标中心点到相机光轴的偏离角度
+auto compute_angle2cam_x(const Transform& cam, const Point3d& point) -> double {
+    const auto ct = cam.translation.make<Eigen::Vector3d>();
+    const auto cq = cam.orientation.make<Eigen::Quaterniond>();
+    const auto pt = point.make<Eigen::Vector3d>();
+
+    const auto to_target = pt - ct;
+    const auto q_inv     = cq.inverse();
+    const auto in_cam    = q_inv * to_target;
+
+    return std::atan2(std::hypot(in_cam.y(), in_cam.z()), in_cam.x());
+}
 }

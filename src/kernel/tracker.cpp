@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <ranges>
 #include <unordered_map>
+#include <string>
 
 using namespace rmcs::kernel;
 using namespace rmcs::util;
@@ -27,6 +28,8 @@ struct Tracker::Impl {
             &Config::image_margin, "image_margin",
             // clang-format on
         };
+
+        std::map<std::string, double> priority;
     } config;
 
     struct RobotConfig : RobotModel::Config, Serializable {
@@ -376,9 +379,11 @@ struct Tracker::Impl {
             ///  占位符实现，按照目标中心到摄像机视角光轴的
             ///  距离比较优先级，后续可能会引入更复杂的判断
             ///  标准，也可能不会（
-            const auto distance_score =
-                compute_distance2cam_x({ camera.translation, camera.orientation }, p);
-            return distance_score;
+
+            // 改动：从到光轴的距离改为到光轴的角度
+            const auto score =
+                compute_angle2cam_x({ camera.translation, camera.orientation }, p);
+            return score;
         };
         const auto locked = aim_intent && track_genre != DeviceId::UNKNOWN;
 

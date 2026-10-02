@@ -95,6 +95,17 @@ target_link_libraries(
     yaml-cpp::yaml-cpp
 )
 
+# Target score
+ament_add_gtest(
+    test_target_score
+    ${TEST_DIR}/target_score.cpp
+    ${RMCS_SRC_DIR}/utility/math/camera.cpp
+)
+target_link_libraries(
+    test_target_score
+    ${OpenCV_LIBRARIES}
+)
+
 # Static TF
 ament_add_gtest(
     test_static_tf
