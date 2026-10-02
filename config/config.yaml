@@ -46,8 +46,13 @@ detector:
 
 tracker:
   fallback_color: BLUE
-  timeout_seconds: 1.5
+  # 离开视野的超时时间
+  observation_timeout_seconds: 1.5
   image_margin: 50
+  # 火控无法解算的超时时间
+  fire_timeout_seconds: 1.0
+  # 换人所需的分数差余量（度）
+  switch_margin: 10.0
 
   # 哨兵对不同目标的跟踪优先级，数字越小优先级越高
   priority_autonomous:

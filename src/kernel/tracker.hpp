@@ -64,6 +64,12 @@ public:
     ///   关闭时只按偏离角排序，跟随操作手
     auto update_autonomous_mode(bool on) -> void;
 
+    /// @brief:
+    ///  设置本帧火控有没有给出可执行的瞄准。连续拿不到解超过阈值时，
+    ///  放弃当前锁定的目标（仅自主决策兵种生效）
+    auto update_aim_solved(bool solved) -> void;
+
+
     auto update_track_color(CampColor) -> void;
     auto update_track_genre(DeviceIds) -> void;
 

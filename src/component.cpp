@@ -356,8 +356,14 @@ public:
                     addition.pre_aim      = aimed->pre_aim;
                     addition.should_track = true;
                     addition.should_shoot = aimed->shoot;
+                    addition.aim_solved   = true;
                     addition.ff_v         = aimed->target.ff_v;
                     addition.ff_a         = aimed->target.ff_a;
+                });
+            } else {
+                // 当前帧无解时明确给出
+                auto_aim.with_context([](AutoAim::Context& ctx) {
+                    ctx.addition.aim_solved = false;
                 });
             }
         }

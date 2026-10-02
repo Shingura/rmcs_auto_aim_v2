@@ -101,6 +101,8 @@ struct FireController::Impl {
 
         config.offset_yaw    = util::deg2rad(config.offset_yaw);
         config.offset_pitch  = util::deg2rad(config.offset_pitch);
+        config.yaw_min       = util::deg2rad(config.yaw_min);
+        config.yaw_max       = util::deg2rad(config.yaw_max);
         config.attack_window = util::deg2rad(config.attack_window);
 
         shoot_evaluator = std::make_unique<ShootEvaluator>(ShootEvaluator::Config {
@@ -384,6 +386,9 @@ struct FireController::Impl {
         // 偏置校正
         yaw   = yaw + config.offset_yaw;
         pitch = pitch + config.offset_pitch;
+
+        // 瞄准角超出云台可达范围时视为无解
+        if (yaw < config.yaw_min || yaw > config.yaw_max) return std::nullopt;
 
         // 退化发射评估：任一装甲板扫过弹道射线（横向偏移不超过板半宽）即允许发弹
         const auto armor_on_ray = [&](const Point3d& center, const AimPoints& aimpoints) {

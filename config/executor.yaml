@@ -137,6 +137,10 @@ auto_aim_component:
       # 便会停止跟踪该装甲板，提前到另一个窗口边界等待下一个装甲板
       attack_preaim: true
 
+      # 云台 yaw 的可达范围，超过窗口的视为无法射击
+      yaw_min: -180.0
+      yaw_max: +180.0
+
       # 选板窗口滞回比例（施密特）：进入 (1-h)、退出 (1+h)
       window_hysteresis: 0.2
 

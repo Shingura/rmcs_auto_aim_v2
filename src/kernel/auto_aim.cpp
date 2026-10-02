@@ -253,6 +253,7 @@ struct AutoAim::Impl {
             }
             tracker->update_aim_intent(context.track_intent);
             tracker->update_track_genre(context.track_ids);
+            tracker->update_aim_solved(context.addition.aim_solved);
             tracker->update_camera(iso);
 
             tracker->clean();

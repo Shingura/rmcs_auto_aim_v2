@@ -3,7 +3,9 @@
 #include "module/tracker/model/outpost.hpp"
 #include "module/tracker/model/robot.hpp"
 #include "module/tracker/model/rune.hpp"
+#include "module/tracker/selection.hpp"
 #include "utility/logging/printer.hpp"
+#include "utility/math/angle.hpp"
 #include "utility/math/camera.hpp"
 #include "utility/robot/priority.hpp"
 #include "utility/serializable.hpp"
@@ -26,19 +28,26 @@ struct Tracker::Impl {
     PriorityMode priority_table;
 
     struct Config : Serializable {
-        std::string fallback_color = "RED";
-        double timeout_seconds     = 1.5;
-        double image_margin        = 20.0;
+        std::string fallback_color         = "RED";
+        double observation_timeout_seconds = 1.5;
+        double image_margin                = 20.0;
+        double fire_timeout_seconds        = 1.0;
+
+        // 换人所需的分数差余量，配置里写度，构造里转成弧度
+        double switch_margin = 0.0;
+
         std::map<std::string, double> priority_autonomous;
         std::map<std::string, double> priority_teleoperated;
 
         static constexpr std::tuple metas {
             // clang-format off
             &Config::fallback_color, "fallback_color",
-            &Config::timeout_seconds, "timeout_seconds",
+            &Config::observation_timeout_seconds, "observation_timeout_seconds",
             &Config::image_margin, "image_margin",
             &Config::priority_autonomous, "priority_autonomous",
             &Config::priority_teleoperated, "priority_teleoperated",
+            &Config::fire_timeout_seconds, "fire_timeout_seconds",
+            &Config::switch_margin, "switch_margin",
             // clang-format on
         };
     } config;
@@ -105,6 +114,9 @@ struct Tracker::Impl {
     bool aim_intent      = false;
     bool aim_cleanup     = false;
     bool autonomous_mode = false;
+    bool aim_solved      = false;
+    // 记录上一次火控成功解算的时间
+    Timestamp aim_solved_stamp;
 
     DeviceIds track_devices = DeviceIds::Full();
     DeviceId track_genre    = DeviceId::UNKNOWN;
@@ -133,6 +145,8 @@ struct Tracker::Impl {
             logging.error("TrackerV2 初始化错误: {}", ret.error());
             throw std::runtime_error { "无法构造 TrackerV2" };
         }
+
+        config.switch_margin = util::deg2rad(config.switch_margin);
 
         // 从 yaml 读取目标优先级，写入 priority_table
         const auto fill = [&](const std::map<std::string, double>& source, PriorityMode& target) {
@@ -181,6 +195,7 @@ struct Tracker::Impl {
         priority_table  = on ? priority_autonomous : priority_teleoperated;
     }
 
+    auto update_aim_solved(bool solved) -> void { aim_solved = solved; }
     auto clean() noexcept {
         stored.armor2ds.clear();
         stored.armor3ds.clear();
@@ -242,7 +257,7 @@ struct Tracker::Impl {
             const auto dt = std::chrono::duration<double> {
                 timestamp - outpost_stamp,
             };
-            if (dt.count() > config.timeout_seconds) {
+            if (dt.count() > config.observation_timeout_seconds) {
                 outpost       = nullptr;
                 outpost_stamp = timestamp;
 
@@ -256,7 +271,7 @@ struct Tracker::Impl {
                 const auto dt = std::chrono::duration<double> {
                     timestamp - rune_corrected_stamp,
                 };
-                if (dt.count() > config.timeout_seconds) {
+                if (dt.count() > config.observation_timeout_seconds) {
                     rune = nullptr;
 
                     if (track_genre == DeviceId::RUNE && aim_intent && aim_cleanup) {
@@ -270,7 +285,7 @@ struct Tracker::Impl {
             const auto [id, stamp] = item;
 
             const auto dt = std::chrono::duration<double> { timestamp - stamp };
-            if (dt.count() > config.timeout_seconds) {
+            if (dt.count() > config.observation_timeout_seconds) {
                 robot_models.erase(id);
 
                 if (track_genre == id && aim_intent && aim_cleanup) {
@@ -280,7 +295,6 @@ struct Tracker::Impl {
             }
             return false;
         });
-
         struct Target final {
             std::vector<Armor2d> armor2ds;
             std::vector<Armor3d> armor3ds;
@@ -378,9 +392,10 @@ struct Tracker::Impl {
                     .translation = camera.translation,
                     .orientation = camera.orientation,
                 });
+                // 模型初始化失败时处理
                 if (!robot_models[id].init(target.armor2ds)) {
                     robot_models.erase(id);
-                    robot_stamps.erase(id);
+                    // 移除了 robot_stamps.erase(id); 防止超时清理失效
                     continue;
                 } else {
                     logging.info("Init OK with {}", get_enum_name(id));
@@ -397,10 +412,10 @@ struct Tracker::Impl {
                 });
                 model.predict(dt.count());
                 model.correct(target.armor2ds, target.bars);
-
+                // 模型发散时处理
                 if (model.diverged()) {
                     robot_models.erase(id);
-                    robot_stamps.erase(id);
+                    // 移除了 robot_stamps.erase(id); 防止超时清理失效
                     logging.warn("{} is diverged", get_enum_name(id));
                     continue;
                 }
@@ -409,7 +424,7 @@ struct Tracker::Impl {
         }
 
         // 选择目标并填充调试信息
-        // 除哨兵以外的兵种，只启用 1. 偏离角度
+        // 除哨兵以外的兵种，只启用偏离角度
         const auto calculate = [&](DeviceId id, const Point3d& center,
                                    std::span<const Armor3d> armors = { }) -> double {
             // 1. 使用代表点确定偏离角度
@@ -436,6 +451,9 @@ struct Tracker::Impl {
         auto result = Trackable::Unique { };
         auto better = std::numeric_limits<double>::max();
         auto device = DeviceId::UNKNOWN;
+
+        // 锁定时其他候选的最好分数，用于判断是否存在可切换的更优目标
+        auto other_score = std::numeric_limits<double>::max();
         {
             if (!locked || DeviceId::OUTPOST == track_genre) {
                 if (outpost && outpost->converge()) {
@@ -518,6 +536,12 @@ struct Tracker::Impl {
             for (const auto& [id, model] : robot_models) {
                 // 锁定时，不回传其他的目标
                 if (locked && id != track_genre) {
+                    // 但仍然算分，供后面判断是否存在明显更优目标
+                    if (model.converge()) {
+                        const auto state = model.state();
+                        other_score      = std::min(
+                            other_score, calculate(id, state.get_direction(), model.full()));
+                    }
                     continue;
                 }
                 if (model.converge()) {
@@ -550,11 +574,30 @@ struct Tracker::Impl {
             }
         }
 
+        { // 哨兵：连续拿不到可执行的瞄准，且画面里还有明显更优的目标时，放弃当前锁定
+            if (autonomous_mode && aim_intent && track_genre != DeviceId::UNKNOWN) {
+                if (aim_solved) {
+                    aim_solved_stamp = timestamp;
+                } else {
+                    // 已锁定时其他候选不参与选择
+                    const auto dt = std::chrono::duration<double> { timestamp - aim_solved_stamp };
+                    if (should_unlock(dt.count(), config.fire_timeout_seconds, better, other_score,
+                            config.switch_margin)) {
+                        track_genre = DeviceId::UNKNOWN;
+                    }
+                }
+            }
+        }
+
         /// @NOTE:
         ///  未锁定时更新目标；一旦自瞄意图按下且已有锁定目标，就保持该目标
         ///  最高优先级，即使目标暂时丢失。开启锁定超时清理时，目标超时后会
         ///  解除锁定并允许重新选择
         if (!locked) {
+            // 对于哨兵，记录火控解算的时间
+            if (autonomous_mode && track_genre != device) {
+                aim_solved_stamp = timestamp;
+            }
             track_genre = device;
         }
         return result;
@@ -569,6 +612,7 @@ Tracker::~Tracker() noexcept = default;
 auto Tracker::update_aim_intent(bool intent) -> void { pimpl->aim_intent = intent; }
 auto Tracker::update_aim_cleanup(bool on) -> void { pimpl->aim_cleanup = on; }
 auto Tracker::update_autonomous_mode(bool on) -> void { pimpl->update_autonomous_mode(on); }
+auto Tracker::update_aim_solved(bool solved) -> void { pimpl->aim_solved = solved; }
 
 auto Tracker::update_track_color(CampColor camp) -> void {
     /*^^*/ if (camp == CampColor::RED) {

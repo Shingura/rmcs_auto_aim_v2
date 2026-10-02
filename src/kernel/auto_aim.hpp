@@ -49,6 +49,7 @@ public:
             bool should_track = false;
             bool should_shoot = false;
             bool pre_aim      = false;
+            bool aim_solved   = false;
         } addition;
     };
 

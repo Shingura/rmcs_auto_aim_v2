@@ -31,6 +31,11 @@ public:
         double pitch_tolerance = 0.04;
 
         bool attack_preaim = false;
+
+        // 云台 yaw 可达范围，默认不限
+        double yaw_min = -180.0;
+        double yaw_max = +180.0;
+
         double rune_idle_duration;
         double rune_shoot_duration;
 
@@ -49,6 +54,9 @@ public:
             &Config::attack_preaim, "attack_preaim",
             &Config::rune_idle_duration, "rune_idle_duration",
             &Config::rune_shoot_duration, "rune_shoot_duration",
+            &Config::yaw_min, "yaw_min",
+            &Config::yaw_max, "yaw_max",
+
             // clang-format on
         };
     };

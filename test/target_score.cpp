@@ -1,8 +1,10 @@
+#include "module/tracker/selection.hpp"
 #include "utility/math/camera.hpp"
 #include "utility/robot/priority.hpp"
 
 #include <cmath>
 #include <gtest/gtest.h>
+#include <limits>
 
 // Point3d、Transform 等在 rmcs 下，camera.hpp 的两个函数在 rmcs::util 下
 using namespace rmcs;
@@ -32,13 +34,13 @@ TEST(compute_angle2cam_x, on_axis_is_zero) {
 }
 
 TEST(compute_angle2cam_x, matches_known_angle) {
-    const auto cam = camera_at_origin();
+    const auto cam   = camera_at_origin();
     const auto angle = degrees(5.0);
     EXPECT_NEAR(compute_angle2cam_x(cam, point_at(20.0, angle)), angle, 1e-9);
 }
 
 TEST(compute_angle2cam_x, counts_vertical_offset_too) {
-    const auto cam = camera_at_origin();
+    const auto cam   = camera_at_origin();
     const auto angle = degrees(10.0);
     // 同样的偏角，但偏在竖直方向上
     const auto point = Point3d { 20.0 * std::cos(angle), 0.0, 20.0 * std::sin(angle) };
@@ -60,8 +62,7 @@ TEST(compute_distance2cam_x, same_angle_gives_different_score_at_any_distance) {
     const auto angle = degrees(10.0);
 
     // 旧的算米方式：同一偏角，远近不同的两个目标得分不同
-    EXPECT_LT(
-        compute_distance2cam_x(cam, point_at(4.0, angle)),
+    EXPECT_LT(compute_distance2cam_x(cam, point_at(4.0, angle)),
         compute_distance2cam_x(cam, point_at(20.0, angle)));
 }
 
@@ -87,18 +88,16 @@ TEST(target_selection, distance_is_no_longer_baked_into_the_score) {
     const auto cam = camera_at_origin();
 
     // 同一个目标，只把距离拉远，偏角不变
-    const auto angle = degrees(5.0);
+    const auto angle      = degrees(5.0);
     const auto near_point = point_at(4.0, angle);
     const auto far_point  = point_at(20.0, angle);
 
     // 角度不变
-    EXPECT_NEAR(
-        compute_angle2cam_x(cam, near_point), compute_angle2cam_x(cam, far_point), 1e-9);
+    EXPECT_NEAR(compute_angle2cam_x(cam, near_point), compute_angle2cam_x(cam, far_point), 1e-9);
 
     // 米数变了 5 倍
-    EXPECT_NEAR(
-        compute_distance2cam_x(cam, far_point) / compute_distance2cam_x(cam, near_point), 5.0,
-        1e-9);
+    EXPECT_NEAR(compute_distance2cam_x(cam, far_point) / compute_distance2cam_x(cam, near_point),
+        5.0, 1e-9);
 }
 
 // -------------------- 兵种优先级 --------------------
@@ -180,7 +179,45 @@ TEST(compute_armor_facing, grows_when_the_observer_moves_sideways) {
     const auto armor = armor_at(0.0, 5.0, 0.0, kPi / 2.0);
 
     // 同一块板，相机从正前方挪到侧面，看到的夹角变大
-    EXPECT_LT(
-        compute_armor_facing(Translation { 0.0, 0.0, 0.0 }, armor),
+    EXPECT_LT(compute_armor_facing(Translation { 0.0, 0.0, 0.0 }, armor),
         compute_armor_facing(Translation { 4.0, 0.0, 0.0 }, armor));
+}
+
+// -------------------- 放弃锁定的判据 --------------------
+
+namespace {
+
+// 没有分数时的哨兵值
+constexpr auto kNoScore = std::numeric_limits<double>::max();
+
+}
+
+TEST(should_unlock, stays_locked_before_the_timeout) {
+    // 才过了 0.5 秒，即使旁边有个好很多的候选也不换
+    EXPECT_FALSE(should_unlock(0.5, 1.0, 0.8, 0.1, 0.2));
+}
+
+TEST(should_unlock, stays_locked_when_there_is_no_other_candidate) {
+    // 打不到已经 3 秒，但画面里只有这一个目标
+    EXPECT_FALSE(should_unlock(3.0, 1.0, 0.8, kNoScore, 0.2));
+}
+
+TEST(should_unlock, gives_up_when_another_target_is_much_better) {
+    // 打不到 3 秒，另一个候选好出 0.5，超过 0.2 的余量
+    EXPECT_TRUE(should_unlock(3.0, 1.0, 0.8, 0.3, 0.2));
+}
+
+TEST(should_unlock, stays_locked_when_the_gap_is_too_small) {
+    // 另一个只好了 0.1，不到 0.2 的余量，不换，避免来回切
+    EXPECT_FALSE(should_unlock(3.0, 1.0, 0.8, 0.7, 0.2));
+}
+
+TEST(should_unlock, gap_equal_to_the_margin_is_not_enough) {
+    // 正好差一个余量，按「必须超过」处理
+    EXPECT_FALSE(should_unlock(3.0, 1.0, 0.8, 0.6, 0.2));
+}
+
+TEST(should_unlock, gives_up_when_the_locked_one_has_no_score) {
+    // 锁定的目标这一帧连分都没拿到（没收敛），旁边有候选就可以换
+    EXPECT_TRUE(should_unlock(3.0, 1.0, kNoScore, 0.5, 0.2));
 }
