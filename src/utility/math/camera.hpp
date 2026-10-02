@@ -4,6 +4,7 @@
 #include <opencv2/core/mat.hpp>
 
 #include "utility/math/linear.hpp"
+#include "utility/robot/armor.hpp"
 
 namespace rmcs::util {
 
@@ -29,5 +30,8 @@ struct CameraFeature {
 
 auto compute_distance2cam_x(const Transform& cam, const Point3d& point) -> double;
 auto compute_angle2cam_x(const Transform& cam, const Point3d& point) -> double;
+
+// 板面外法向与「板心 → 观察位置」连线的夹角。0 表示板面正对观察位置，pi/2 表示侧对
+auto compute_armor_facing(const Translation& eye, const Armor3d& armor) -> double;
 
 } // namespace rmcs::util

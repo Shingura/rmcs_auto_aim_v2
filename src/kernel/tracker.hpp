@@ -48,8 +48,8 @@ public:
     explicit Tracker(const YAML::Node&);
 
     /// @brief:
-    ///  设置自瞄意图，当关闭自瞄时，选取距离相机 X 轴最近的
-    ///  机器人锁定，当自瞄开启时，锁定该机器人，即使该机器
+    ///  设置自瞄意图，当关闭自瞄时，选取候选分最高的机器
+    ///  人锁定，当自瞄开启时，锁定该机器人，即使该机器
     ///  人离开视野
     auto update_aim_intent(bool intent) -> void;
 
@@ -58,6 +58,11 @@ public:
     ///  此时会按照正常的优先级选取下一个目标，关闭时，一旦
     ///  锁定，则永远只瞄准该目标，直到自瞄意图被关闭
     auto update_aim_cleanup(bool on) -> void;
+
+    /// @brief: 
+    ///   设定本车是否为自主决策兵种。开启时兵种优先级生效、装甲板朝向参与锁定权重；
+    ///   关闭时只按偏离角排序，跟随操作手
+    auto update_autonomous_mode(bool on) -> void;
 
     auto update_track_color(CampColor) -> void;
     auto update_track_genre(DeviceIds) -> void;

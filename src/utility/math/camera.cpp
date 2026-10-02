@@ -2,6 +2,8 @@
 
 #include "camera.hpp"
 
+#include <algorithm>
+#include <cmath>
 #include <eigen3/Eigen/Geometry>
 #include <opencv2/core/eigen.hpp>
 
@@ -64,5 +66,18 @@ auto compute_angle2cam_x(const Transform& cam, const Point3d& point) -> double {
     const auto in_cam    = q_inv * to_target;
 
     return std::atan2(std::hypot(in_cam.y(), in_cam.z()), in_cam.x());
+}
+
+// 计算装甲板板面外法向与「板心 → 观察位置」连线的夹角
+auto compute_armor_facing(const Translation& eye, const Armor3d& armor) -> double {
+    const auto eye_position = eye.make<Eigen::Vector3d>();
+    const auto position     = armor.translation.make<Eigen::Vector3d>();
+
+    // 约定：orientation 的 X 轴 = 板心 → 旋转中心，取反得到板面外法向
+    const auto normal = armor.orientation.make<Eigen::Quaterniond>() * -Eigen::Vector3d::UnitX();
+
+    const auto to_eye = (eye_position - position).normalized();
+
+    return std::acos(std::clamp(normal.dot(to_eye), -1.0, 1.0));
 }
 }

@@ -242,11 +242,14 @@ struct AutoAim::Impl {
         auto trackable = Trackable::Unique { };
         {
             if (context.id != RobotId::UNKNOWN) {
+                const auto is_autonomous =
+                    context.id == RobotId::RED_SENTRY || context.id == RobotId::BLUE_SENTRY;
+
                 tracker->update_track_color(
                     (context.id.color() == RobotColor::RED) ? CampColor::BLUE : CampColor::RED);
                 // 哨兵自瞄常开，需要超时检测
-                tracker->update_aim_cleanup(
-                    context.id == RobotId::RED_SENTRY || context.id == RobotId::BLUE_SENTRY);
+                tracker->update_aim_cleanup(is_autonomous);
+                tracker->update_autonomous_mode(is_autonomous);
             }
             tracker->update_aim_intent(context.track_intent);
             tracker->update_track_genre(context.track_ids);

@@ -5,31 +5,42 @@
 #include "module/tracker/model/rune.hpp"
 #include "utility/logging/printer.hpp"
 #include "utility/math/camera.hpp"
+#include "utility/robot/priority.hpp"
 #include "utility/serializable.hpp"
 
 #include <algorithm>
+#include <cmath>
+#include <map>
 #include <ranges>
-#include <unordered_map>
 #include <string>
+#include <unordered_map>
 
 using namespace rmcs::kernel;
 using namespace rmcs::util;
 
 struct Tracker::Impl {
+    // 哨兵和其他兵种分开使用兵种优先级表
+    PriorityMode priority_autonomous;
+    PriorityMode priority_teleoperated;
+    // 当前生效的表
+    PriorityMode priority_table;
+
     struct Config : Serializable {
         std::string fallback_color = "RED";
         double timeout_seconds     = 1.5;
         double image_margin        = 20.0;
+        std::map<std::string, double> priority_autonomous;
+        std::map<std::string, double> priority_teleoperated;
 
         static constexpr std::tuple metas {
             // clang-format off
             &Config::fallback_color, "fallback_color",
             &Config::timeout_seconds, "timeout_seconds",
             &Config::image_margin, "image_margin",
+            &Config::priority_autonomous, "priority_autonomous",
+            &Config::priority_teleoperated, "priority_teleoperated",
             // clang-format on
         };
-
-        std::map<std::string, double> priority;
     } config;
 
     struct RobotConfig : RobotModel::Config, Serializable {
@@ -91,8 +102,9 @@ struct Tracker::Impl {
         std::vector<RuneBullseye> bullseyes;
     } stored;
 
-    bool aim_intent  = false;
-    bool aim_cleanup = false;
+    bool aim_intent      = false;
+    bool aim_cleanup     = false;
+    bool autonomous_mode = false;
 
     DeviceIds track_devices = DeviceIds::Full();
     DeviceId track_genre    = DeviceId::UNKNOWN;
@@ -121,6 +133,24 @@ struct Tracker::Impl {
             logging.error("TrackerV2 初始化错误: {}", ret.error());
             throw std::runtime_error { "无法构造 TrackerV2" };
         }
+
+        // 从 yaml 读取目标优先级，写入 priority_table
+        const auto fill = [&](const std::map<std::string, double>& source, PriorityMode& target) {
+            for (const auto& [name, value] : source) {
+                const auto id = rmcs::from_string(name);
+                if (id == DeviceId::UNKNOWN) {
+                    logging.error("未知的目标类型：{}", name);
+                    continue;
+                }
+                target[id] = value;
+            }
+        };
+
+        fill(config.priority_autonomous, priority_autonomous);
+        fill(config.priority_teleoperated, priority_teleoperated);
+        // 默认为有人操控车，即无兵种偏好
+        priority_table = priority_teleoperated;
+
         if (auto ret = robot_config.serialize(yaml["robot"]); !ret) {
             logging.error("RobotModel config error: {}", ret.error());
             throw std::runtime_error { "无法构造 RobotModel Config" };
@@ -143,6 +173,12 @@ struct Tracker::Impl {
         } else {
             logging.error("invalid color {}", config.fallback_color);
         }
+    }
+
+    // 根据 autonomous_mode 决定使用表
+    auto update_autonomous_mode(bool on) -> void {
+        autonomous_mode = on;
+        priority_table  = on ? priority_autonomous : priority_teleoperated;
     }
 
     auto clean() noexcept {
@@ -373,18 +409,28 @@ struct Tracker::Impl {
         }
 
         // 选择目标并填充调试信息
-        const auto calculate = [&](DeviceId id, const Point3d& p) -> double {
-            std::ignore = id;
-            /// @NOTE:
-            ///  占位符实现，按照目标中心到摄像机视角光轴的
-            ///  距离比较优先级，后续可能会引入更复杂的判断
-            ///  标准，也可能不会（
+        // 除哨兵以外的兵种，只启用 1. 偏离角度
+        const auto calculate = [&](DeviceId id, const Point3d& center,
+                                   std::span<const Armor3d> armors = { }) -> double {
+            // 1. 使用代表点确定偏离角度
+            const auto deviation =
+                compute_angle2cam_x({ camera.translation, camera.orientation }, center);
 
-            // 改动：从到光轴的距离改为到光轴的角度
-            const auto score =
-                compute_angle2cam_x({ camera.translation, camera.orientation }, p);
-            return score;
+            // 2. 查兵种优先级，表里没有这一项就退回 0（空表等价于不带偏好）
+            const auto priority = lookup_priority(priority_table, id);
+
+            // 3. 从候选点中选择最正对相机的板
+            auto facing = 0.0;
+            if (autonomous_mode && !armors.empty()) {
+                facing = std::numeric_limits<double>::max();
+
+                for (const auto& armor : armors) {
+                    facing = std::min(facing, compute_armor_facing(camera.translation, armor));
+                }
+            }
+            return deviation + priority + facing;
         };
+
         const auto locked = aim_intent && track_genre != DeviceId::UNKNOWN;
 
         auto result = Trackable::Unique { };
@@ -393,15 +439,16 @@ struct Tracker::Impl {
         {
             if (!locked || DeviceId::OUTPOST == track_genre) {
                 if (outpost && outpost->converge()) {
-                    const auto state = outpost->state();
-                    const auto score = calculate(DeviceId::OUTPOST, state.get_direction());
+                    const auto state  = outpost->state();
+                    const auto armors = outpost->full();
+                    const auto score  = calculate(DeviceId::OUTPOST, state.get_direction(), armors);
                     if (better > score) {
                         better = score;
                         result = make_trackable(outpost_stamp, state, DeviceId::OUTPOST);
 
                         device = DeviceId::OUTPOST;
                     }
-                    std::ranges::copy(outpost->full(), std::back_inserter(addition.tracked3d));
+                    std::ranges::copy(armors, std::back_inserter(addition.tracked3d));
 
                     const auto a = state.rotation_angle;
                     const auto v = state.rotation_speed;
@@ -414,6 +461,7 @@ struct Tracker::Impl {
             if (!locked || DeviceId::RUNE == track_genre) {
                 if (rune && rune->converge()) {
                     const auto state = rune->state();
+                    // 大符的五片符叶都在同一个平面上，不需要考虑法向
                     const auto score = calculate(DeviceId::RUNE, state.get_direction());
                     if (better > score) {
                         better = score;
@@ -474,7 +522,7 @@ struct Tracker::Impl {
                 }
                 if (model.converge()) {
                     const auto state = model.state();
-                    const auto score = calculate(id, state.get_direction());
+                    const auto score = calculate(id, state.get_direction(), model.full());
                     if (better > score) {
                         better = score;
                         result = make_trackable(robot_stamps.at(id), state, id);
@@ -520,6 +568,7 @@ Tracker::~Tracker() noexcept = default;
 
 auto Tracker::update_aim_intent(bool intent) -> void { pimpl->aim_intent = intent; }
 auto Tracker::update_aim_cleanup(bool on) -> void { pimpl->aim_cleanup = on; }
+auto Tracker::update_autonomous_mode(bool on) -> void { pimpl->update_autonomous_mode(on); }
 
 auto Tracker::update_track_color(CampColor camp) -> void {
     /*^^*/ if (camp == CampColor::RED) {

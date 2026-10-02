@@ -49,6 +49,21 @@ tracker:
   timeout_seconds: 1.5
   image_margin: 50
 
+  # 哨兵对不同目标的跟踪优先级，数字越小优先级越高
+  priority_autonomous:
+    HERO: 0.0
+    INFANTRY_3: 0.2
+    INFANTRY_4: 0.2
+    INFANTRY_5: 0.2
+    SENTRY: 0.2
+    ENGINEER: 0.4
+    OUTPOST: 0.6
+    BASE: 0.8
+    RUNE: 1.0
+  # 对于有人控制的兵种，应当完全由操控员的视野决定目标
+  priority_teleoperated: {}
+
+
   robot:
     noise_x: 1e-4
     noise_y: 1e-4
