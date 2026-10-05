@@ -1,0 +1,44 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1440 1180" width="1440" height="1180" font-family="sans-serif">
+  <rect x="0" y="0" width="1440" height="1180" fill="#ffffff"/>
+
+  <!-- 画面 -->
+  <rect x="0" y="0" width="1440" height="1080" fill="#f2f4f7" stroke="#333333" stroke-width="3"/>
+
+  <!-- 光轴与水平中线 -->
+  <line x1="701" y1="0" x2="701" y2="1080" stroke="#9aa5b1" stroke-width="2" stroke-dasharray="12 10"/>
+  <line x1="0" y1="565" x2="1440" y2="565" stroke="#9aa5b1" stroke-width="2" stroke-dasharray="12 10"/>
+
+  <!-- 边缘丢弃区 -->
+  <rect x="50" y="50" width="1340" height="980" fill="none" stroke="#c53030" stroke-width="2" stroke-dasharray="8 8"/>
+  <text x="60" y="90" font-size="24" fill="#c53030">边缘丢弃区：距画面边界 50 px 内的目标会被直接丢掉</text>
+
+  <!-- 准星 -->
+  <circle cx="701" cy="565" r="10" fill="none" stroke="#222222" stroke-width="3"/>
+  <line x1="701" y1="535" x2="701" y2="595" stroke="#222222" stroke-width="3"/>
+  <line x1="671" y1="565" x2="731" y2="565" stroke="#222222" stroke-width="3"/>
+  <text x="715" y="530" font-size="26" fill="#222222">准星（画面中心）</text>
+
+  <!-- 目标 B：4 米，偏 15 度 -->
+  <circle cx="240" cy="565" r="34" fill="#dd6b20"/>
+  <text x="240" y="565" font-size="30" fill="#ffffff" text-anchor="middle" dominant-baseline="central">B</text>
+  <text x="240" y="640" font-size="30" fill="#dd6b20" text-anchor="middle">4 米远</text>
+  <text x="240" y="676" font-size="30" fill="#dd6b20" text-anchor="middle">偏 15°</text>
+
+  <!-- 目标 A：20 米，偏 5 度 -->
+  <circle cx="551" cy="565" r="16" fill="#2b6cb0"/>
+  <text x="551" y="565" font-size="20" fill="#ffffff" text-anchor="middle" dominant-baseline="central">A</text>
+  <text x="551" y="620" font-size="30" fill="#2b6cb0" text-anchor="middle">20 米远</text>
+  <text x="551" y="656" font-size="30" fill="#2b6cb0" text-anchor="middle">偏 5°</text>
+
+  <!-- 偏角标注 -->
+  <text x="640" y="470" font-size="26" fill="#2b6cb0">5°</text>
+  <text x="420" y="470" font-size="26" fill="#dd6b20">15°</text>
+
+  <!-- 画外提示 -->
+  <text x="60" y="1040" font-size="26" fill="#555555">水平视野约 ±22.7°，偏 45° 的目标会落在画面外，根本不会成为候选。</text>
+
+  <!-- 结论 -->
+  <rect x="0" y="1080" width="1440" height="100" fill="#ffffff"/>
+  <text x="40" y="1128" font-size="28" fill="#222222">旧算法（算米）：A = 1.74 米，B = 1.04 米，选 B。新算法（算角度）：A = 0.087 弧度，B = 0.262 弧度，选 A。</text>
+  <text x="40" y="1166" font-size="26" fill="#555555">近处那个偏得多，远处那个就在正前方。旧算法把“远近”混进了分数，所以选了更难打的 B。</text>
+</svg>
