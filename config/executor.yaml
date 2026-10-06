@@ -85,6 +85,8 @@ auto_aim_video_player:
     framerate: 40.0
     # 是否循环播放
     loop_play: true
+    # 姿态 csv 路径；留空时取与视频同名的 csv，找不到则姿态为单位四元数
+    pose_csv: ""
 
 auto_aim_component:
   ros__parameters:

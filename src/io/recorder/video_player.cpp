@@ -4,10 +4,12 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <filesystem>
 #include <memory>
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <vector>
 
 #include <opencv2/imgproc.hpp>
 #include <opencv2/videoio.hpp>
@@ -17,6 +19,8 @@
 #include <rclcpp/node.hpp>
 #include <rmcs_executor/component.hpp>
 #include <rmcs_msgs/camera_frame.hpp>
+
+#include "utility/image/pose_csv.hpp"
 
 namespace rmcs {
 
@@ -35,7 +39,8 @@ public:
               return std::chrono::duration_cast<std::chrono::steady_clock::duration>(
                   std::chrono::duration<double> { 1.0 / framerate });
           }())
-        , loop_play_(get_parameter_or<bool>("loop_play", false)) {
+        , loop_play_(get_parameter_or<bool>("loop_play", false))
+        , pose_csv_parameter_(get_parameter_or<std::string>("pose_csv", "")) {
         if (input_path_.empty()) {
             throw std::runtime_error("Parameter \"input_path\" must not be empty");
         }
@@ -53,6 +58,7 @@ public:
 
     void before_updating() override {
         RCLCPP_INFO(logger_, "Playing video stream from %s", input_path_.c_str());
+        load_pose_csv();
         worker_thread_ = std::thread { [this] { worker_main(); } };
     }
 
@@ -100,6 +106,8 @@ private:
                 || frame.empty()) {
                 throw std::runtime_error("Failed to restart input video from beginning");
             }
+            // 从头重放：姿态也从第一行重新对应
+            frame_index_ = 0;
         }
 
         auto bgr = cv::Mat { };
@@ -139,9 +147,50 @@ private:
         auto output_frame = std::make_shared<rmcs_msgs::CameraFrame>();
         output_frame->data_raw.fill(std::byte { 0 });
         output_frame->opencv_cvt_color_code = 0;
-        output_frame->imu_snapshot          = Eigen::Quaterniond::Identity();
         std::memcpy(output_frame->data.data(), resized.data, output_frame->data.size());
+
+        apply_pose(*output_frame);
+        ++frame_index_;
+
         return output_frame;
+    }
+
+    /// @brief 读取姿态 csv。默认取与视频同名的 csv，找不到就沿用单位姿态
+    void load_pose_csv() {
+        auto path = std::filesystem::path { pose_csv_parameter_ };
+        if (path.empty()) {
+            path = std::filesystem::path { input_path_ };
+            path.replace_extension(".csv");
+            if (!std::filesystem::exists(path)) return;
+        }
+
+        try {
+            pose_rows_ = util::read_pose_csv(path);
+        } catch (const std::exception& exception) {
+            RCLCPP_ERROR(logger_, "Failed to read pose csv %s: %s", path.c_str(), exception.what());
+            return;
+        }
+
+        RCLCPP_INFO(logger_, "Loaded %zu pose rows from %s", pose_rows_.size(), path.c_str());
+    }
+
+    /// @brief 把当前帧的姿态填进帧数据。csv 的行号与视频的帧号一一对应
+    void apply_pose(rmcs_msgs::CameraFrame& frame) {
+        if (const auto* row = util::pose_at(pose_rows_, frame_index_)) {
+            last_pose_ = *row;
+        } else if (!pose_rows_.empty() && !pose_missing_warned_) {
+            pose_missing_warned_ = true;
+            RCLCPP_WARN(logger_, "Pose csv has no row for frame %zu, keep the previous pose",
+                frame_index_);
+        }
+
+        frame.imu_snapshot = Eigen::Quaterniond {
+            last_pose_.qw,
+            last_pose_.qx,
+            last_pose_.qy,
+            last_pose_.qz,
+        };
+        frame.gyro_body = Eigen::Vector3d { last_pose_.gx, last_pose_.gy, last_pose_.gz };
     }
 
 private: // constants
@@ -150,9 +199,18 @@ private: // constants
     const std::chrono::steady_clock::duration frame_period_;
     const bool loop_play_;
 
+    // 显式指定的姿态 csv。留空时取与视频同名的 csv
+    const std::string pose_csv_parameter_;
+
 private: // io
     cv::VideoCapture capture_;
     EventOutputInterface<std::shared_ptr<const rmcs_msgs::CameraFrame>> frame_output_;
+
+private: // pose
+    std::vector<util::PoseRow> pose_rows_ { };
+    util::PoseRow last_pose_ { };
+    std::size_t frame_index_  = 0;
+    bool pose_missing_warned_ = false;
 
 private: // worker
     std::atomic<bool> stop_requested_ { false };

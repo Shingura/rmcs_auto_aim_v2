@@ -123,6 +123,13 @@ target_link_libraries(
     ${OpenCV_LIBRARIES}
 )
 
+# Pose csv
+ament_add_gtest(
+    test_pose_csv
+    ${TEST_DIR}/pose_csv.cpp
+    ${RMCS_SRC_DIR}/utility/image/pose_csv.cpp
+)
+
 # Static TF
 ament_add_gtest(
     test_static_tf
