@@ -1,12 +1,18 @@
 #include <atomic>
 #include <cmath>
+#include <condition_variable>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <deque>
 #include <exception>
+#include <expected>
 #include <experimental/scope>
 #include <memory>
+#include <mutex>
+#include <optional>
 #include <stdexcept>
+#include <stop_token>
 #include <string>
 #include <thread>
 #include <vector>
@@ -24,6 +30,7 @@
 #include "hikcamera.hpp"
 #include "imu_snapshot_buffer.hpp"
 #include "linear_sync_model.hpp"
+#include "utility/image/recorder.hpp"
 
 namespace rmcs {
 
@@ -80,6 +87,29 @@ public:
         }
         register_output(frame_topic, frame_output_);
 
+        { // 可选的视频录制：把画面与姿态写成 avi 与同名 csv
+            auto config        = VideoRecorderWorker::Config { };
+            config.enable      = get_parameter_or<bool>("record_enable", false);
+            config.directories = get_parameter_or<std::vector<std::string>>(
+                "saving_pathes", config.directories);
+            config.record_fps  = static_cast<std::size_t>(get_parameter_or<std::int64_t>(
+                "record_fps", static_cast<std::int64_t>(config.record_fps)));
+            config.max_duration = std::chrono::seconds {
+                get_parameter_or<std::int64_t>("max_duration_seconds", config.max_duration.count()),
+            };
+            config.max_videos_size = static_cast<std::uintmax_t>(
+                get_parameter_or<double>("max_videos_size_gb", 30.0) * 1024.0 * 1024.0 * 1024.0);
+
+            if (config.enable) {
+                if (auto result = video_recorder_.start(config); !result) {
+                    RCLCPP_ERROR(logger_, "[RECORD] Unable to start: %s", result.error().c_str());
+                } else {
+                    RCLCPP_INFO(logger_, "[RECORD] Started: %zu fps, duration limit %ld s",
+                        config.record_fps, static_cast<long>(config.max_duration.count()));
+                }
+            }
+        }
+
         register_input(std::format("/{}/enable", get_component_name()), enable_input_, false);
     }
 
@@ -88,9 +118,144 @@ public:
         notify_event();
 
         if (worker_thread_.joinable()) worker_thread_.join();
+
+        if (video_recorder_.enabled()) {
+            video_recorder_.stop();
+            RCLCPP_INFO(logger_, "[RECORD] Stopped: pushed=%zu dropped=%zu", video_recorder_.pushed(),
+                video_recorder_.dropped());
+        }
     }
 
 private:
+    /// @brief 录像写盘。采集线程只把帧推进队列，编码与写盘在独立线程完成
+    class VideoRecorderWorker {
+    public:
+        struct Config {
+            bool enable = false;
+
+            std::vector<std::string> directories {
+                "/home/root/autoaim/",
+                "/home/ubuntu/autoaim/",
+                "/tmp/autoaim/",
+            };
+            std::size_t record_fps = 30;
+            std::chrono::seconds max_duration { 60 };
+            std::uintmax_t max_videos_size = 30ull * 1024 * 1024 * 1024;
+
+            // 队列深度。写盘慢于采集时，超出的帧直接丢弃
+            std::size_t queue_depth = 4;
+        };
+
+        auto start(const Config& config) -> std::expected<void, std::string> {
+            if (!config.enable) return { };
+
+            config_ = config;
+            recorder_.update_config({
+                .directories     = config.directories,
+                .max_duration    = config.max_duration,
+                .record_fps      = config.record_fps,
+                .max_videos_size = config.max_videos_size,
+            });
+
+            if (auto result = recorder_.start(); !result) return result;
+
+            period_ = std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+                std::chrono::duration<double> { 1.0 / static_cast<double>(config.record_fps) });
+            enabled_   = true;
+            recording_ = true;
+            worker_  = std::jthread { [this](const std::stop_token& token) { worker_loop(token); } };
+
+            return { };
+        }
+
+        /// @brief 推进一帧。按录制帧率抽帧；队列满时丢弃这一帧
+        auto push(const cv::Mat& mat, const VideoRecorder::Pose& pose,
+            std::chrono::steady_clock::time_point timestamp) -> void {
+            // 录制到达时长上限后会自行停止，此时不再复制帧
+            if (!enabled_ || !recording_) return;
+
+            const auto now = std::chrono::steady_clock::now();
+            if (now - last_push_ < period_) return;
+            last_push_ = now;
+
+            {
+                auto lock = std::lock_guard { mutex_ };
+                if (queue_.size() >= config_.queue_depth) {
+                    ++dropped_;
+                    return;
+                }
+                queue_.push_back(Task { mat.clone(), pose, timestamp });
+                ++pushed_;
+            }
+            condition_.notify_one();
+        }
+
+        auto stop() -> void {
+            if (!enabled_) return;
+            enabled_ = false;
+
+            worker_.request_stop();
+            condition_.notify_all();
+            if (worker_.joinable()) worker_.join();
+
+            recorder_.stop();
+            recording_ = false;
+
+            auto lock = std::lock_guard { mutex_ };
+            queue_.clear();
+        }
+
+        [[nodiscard]] auto enabled() const -> bool { return enabled_; }
+        [[nodiscard]] auto pushed() const -> std::size_t { return pushed_; }
+        [[nodiscard]] auto dropped() const -> std::size_t { return dropped_; }
+
+    private:
+        struct Task {
+            cv::Mat mat;
+            VideoRecorder::Pose pose;
+            std::chrono::steady_clock::time_point timestamp;
+        };
+
+        void worker_loop(const std::stop_token& token) {
+            while (!token.stop_requested()) {
+                auto task = std::optional<Task> { };
+                {
+                    auto lock = std::unique_lock { mutex_ };
+                    condition_.wait_for(lock, std::chrono::milliseconds { 100 },
+                        [this] { return !queue_.empty(); });
+                    if (!queue_.empty()) {
+                        task = std::move(queue_.front());
+                        queue_.pop_front();
+                    }
+                }
+
+                if (!task) continue;
+
+                recorder_.tick(task->mat, task->pose, task->timestamp);
+                // 录制可能因为时长上限自动停止，及时告诉采集线程不用再推帧
+                recording_ = recorder_.recording();
+            }
+        }
+
+        Config config_ { };
+        VideoRecorder recorder_ { };
+
+        std::chrono::steady_clock::duration period_ { };
+        std::chrono::steady_clock::time_point last_push_ { };
+
+        std::deque<Task> queue_ { };
+        std::mutex mutex_ { };
+        std::condition_variable condition_ { };
+
+        std::size_t pushed_  = 0;
+        std::size_t dropped_ = 0;
+        std::atomic<bool> enabled_ { false };
+        // 录像器是否仍在录制：到达时长上限时它会自行停止
+        std::atomic<bool> recording_ { false };
+
+        std::jthread worker_ { };
+    };
+
     void before_updating() override {
         worker_thread_ = std::thread { [this] { worker_main(); } };
     }
@@ -534,6 +699,14 @@ private:
             CV_8UC3, reinterpret_cast<char*>(output_frame->data.data()) };
         cv::demosaicing(src, mat, output_frame->opencv_cvt_color_code);
 
+        // 可选录像：与出帧并行，写盘在独立线程完成
+        video_recorder_.push(mat,
+            VideoRecorder::Pose {
+                .orientation = Orientation { orientation },
+                .gyro_body   = Vector3d { gyro_body },
+            },
+            output_frame->exposure_timestamp);
+
         frame_output_.emit(output_frame);
     }
 
@@ -664,6 +837,8 @@ private:
     std::atomic_flag stop_requested_ = ATOMIC_FLAG_INIT;
 
     std::thread worker_thread_;
+
+    VideoRecorderWorker video_recorder_ { };
 };
 
 } // namespace rmcs

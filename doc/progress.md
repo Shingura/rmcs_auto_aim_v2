@@ -131,5 +131,15 @@
 
 顺手修掉一个既有隐患：`Session::append_timestamp` 原来以 `time_point::min()` 初始化，而配置了 `record_fps` 时它在第一次比较之前不会被赋值，`now - min()` 在 int64 上溢出。现在拆成两个变量：`append_timestamp` 在构造函数里初始化为当前时间，只负责写入间隔；`measure_timestamp` 保留 `min()`，只作为 fps 自动测速的哨兵。
 
-待续：采集组件接入录像（独立线程写盘）、回放组件按帧号读取姿态。
+待续：回放组件按帧号读取姿态。
+
+## 8. 采集组件接入录像（问题 5 第二步）
+
+`src/io/capturer/capturer.cpp`：新增私有类 `VideoRecorderWorker`。采集线程只把帧推进队列，编码与写盘在独立线程完成。队列有深度上限，满了就丢弃当前帧并计数。按 `record_fps` 在采集侧先抽一次帧，避免为马上会被丢掉的帧复制图像。录像因时长上限自动停止后，`recording_` 置假，采集侧不再复制帧。录像器只在写盘线程里被调用，`stop()` 放在采集线程退出之后，避免并发访问。
+
+同一文件里还有三处：构造函数读 `record_enable`、`saving_pathes`、`record_fps`、`max_duration_seconds`、`max_videos_size_gb`，开关为真时启动录像；`fill_and_emit()` 把 demosaic 后的 BGR 图、姿态四元数、角速度交给录像器，时间戳用该帧的 `exposure_timestamp`；析构函数在停止录像后打印 pushed 与 dropped。
+
+`config/executor.yaml`：`capturer_main` 增加上述五个参数，`record_enable` 默认关闭。
+
+未验证的部分：这里没有相机，录像能否真正产出 avi 与同名 csv、丢帧计数是否合理，要在实机上跑一次。
 

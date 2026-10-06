@@ -40,6 +40,17 @@ capturer_main:
     # IMU 快照输入；空字符串时姿态为 Identity、角速度为 Zero
     imu_snapshot_topic: "/gimbal/auto_aim/imu_snapshot"
 
+    # 视频录制开关。开启后，每一帧的画面与姿态写成 avi 与同名 csv
+    record_enable: false
+    # 录制文件保存目录，取第一个可用目录
+    saving_pathes: ["/home/root/autoaim/", "/home/ubuntu/autoaim/", "/tmp/autoaim/"]
+    # 录制帧率。相机帧率高于它时按此抽帧
+    record_fps: 30
+    # 单次录制最大时长，单位秒
+    max_duration_seconds: 60
+    # 已录制文件总大小上限，单位 GB
+    max_videos_size_gb: 30.0
+
 auto_aim_recorder:
   ros__parameters:
     # 录制文件输出目录
