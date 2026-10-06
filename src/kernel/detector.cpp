@@ -153,7 +153,6 @@ struct Detector::Impl {
                 robots[armor.genre].push_back(&armor);
             }
         }
-
         /// @NOTE:
         ///  - 前哨站与基地的绿灯不会同时亮起，所以我们只需要维护一个绿灯即可，
         ///  再把高于绿灯高度的建筑类型的装甲板滤除即可，即使将前哨站误识别
