@@ -4,6 +4,7 @@
 #include "module/tracker/model/robot.hpp"
 #include "module/tracker/model/rune.hpp"
 #include "module/tracker/selection.hpp"
+#include "utility/image/frame_bounds.hpp"
 #include "utility/logging/printer.hpp"
 #include "utility/math/angle.hpp"
 #include "utility/math/camera.hpp"
@@ -123,6 +124,12 @@ struct Tracker::Impl {
     ArmorColor track_color  = ArmorColor::DARK;
     CameraFeature camera;
 
+    // 当前帧的图像尺寸，仅用于判断装甲板是否贴边
+    struct {
+        double width  = 0.0;
+        double height = 0.0;
+    } image_size;
+
     std::unordered_map<DeviceId, Timestamp> robot_stamps;
     std::unordered_map<DeviceId, RobotModel> robot_models;
 
@@ -205,9 +212,6 @@ struct Tracker::Impl {
     }
 
     auto store(std::span<const Armor2d> items) {
-        const auto kWidth  = camera.camera_matrix[0][2] * 2.0;
-        const auto kHeight = camera.camera_matrix[1][2] * 2.0;
-
         for (const auto& item : items) {
             if (item.color == track_color && track_devices.contains(item.genre)) {
                 const auto min_x = std::min({ item.tl.x, item.tr.x, item.bl.x, item.br.x });
@@ -215,8 +219,11 @@ struct Tracker::Impl {
                 const auto min_y = std::min({ item.tl.y, item.tr.y, item.bl.y, item.br.y });
                 const auto max_y = std::max({ item.tl.y, item.tr.y, item.bl.y, item.br.y });
 
-                if (min_x < config.image_margin || max_x > kWidth - config.image_margin) continue;
-                if (min_y < config.image_margin || max_y > kHeight - config.image_margin) continue;
+                // 贴边的装甲板可能被裁掉一部分，角点不再是真实角点，不能进滤波器
+                const auto box = BoundingBox2d { min_x, max_x, min_y, max_y };
+                if (!within_image_margin(
+                        box, image_size.width, image_size.height, config.image_margin))
+                    continue;
 
                 stored.armor2ds.push_back(item);
             }
@@ -452,20 +459,40 @@ struct Tracker::Impl {
         auto better = std::numeric_limits<double>::max();
         auto device = DeviceId::UNKNOWN;
 
-        // 锁定时其他候选的最好分数，用于判断是否存在可切换的更优目标
-        auto other_score = std::numeric_limits<double>::max();
-        {
-            if (!locked || DeviceId::OUTPOST == track_genre) {
-                if (outpost && outpost->converge()) {
-                    const auto state  = outpost->state();
-                    const auto armors = outpost->full();
-                    const auto score  = calculate(DeviceId::OUTPOST, state.get_direction(), armors);
-                    if (better > score) {
-                        better = score;
-                        result = make_trackable(outpost_stamp, state, DeviceId::OUTPOST);
+        // 锁定时其他候选里的最好者，用于判断是否存在值得切换的更优目标。
+        auto other_score  = std::numeric_limits<double>::max();
+        auto other_device = DeviceId::UNKNOWN;
+        auto other_result = Trackable::Unique { };
 
-                        device = DeviceId::OUTPOST;
-                    }
+        /// @NOTE:
+        ///  锁定期间只有锁定目标参与选择，其他候选只登记分数：哨兵据此判断
+        ///  画面里有没有明显更优的目标。返回该候选是否参与选择
+        const auto register_candidate = [&](DeviceId id, double score, Timestamp stamp,
+                                            const auto& state) -> bool {
+            if (locked && id != track_genre) {
+                if (score < other_score) {
+                    other_score  = score;
+                    other_device = id;
+                    other_result = make_trackable(stamp, state, id);
+                }
+                return false;
+            }
+            if (better > score) {
+                better = score;
+                result = make_trackable(stamp, state, id);
+
+                device = id;
+            }
+            return true;
+        };
+
+        {
+            if (outpost && outpost->converge()) {
+                const auto state  = outpost->state();
+                const auto armors = outpost->full();
+                const auto score  = calculate(DeviceId::OUTPOST, state.get_direction(), armors);
+
+                if (register_candidate(DeviceId::OUTPOST, score, outpost_stamp, state)) {
                     std::ranges::copy(armors, std::back_inserter(addition.tracked3d));
 
                     const auto a = state.rotation_angle;
@@ -476,18 +503,12 @@ struct Tracker::Impl {
                     });
                 }
             }
-            if (!locked || DeviceId::RUNE == track_genre) {
-                if (rune && rune->converge()) {
-                    const auto state = rune->state();
-                    // 大符的五片符叶都在同一个平面上，不需要考虑法向
-                    const auto score = calculate(DeviceId::RUNE, state.get_direction());
-                    if (better > score) {
-                        better = score;
-                        result = make_trackable(rune_stamp, state, DeviceId::RUNE);
+            if (rune && rune->converge()) {
+                const auto state = rune->state();
+                // 大符的五片符叶都在同一个平面上，不需要考虑法向
+                const auto score = calculate(DeviceId::RUNE, state.get_direction());
 
-                        device = DeviceId::RUNE;
-                    }
-
+                if (register_candidate(DeviceId::RUNE, score, rune_stamp, state)) {
                     std::ranges::copy(
                         rune->addition().predicted | std::views::transform([](const auto& item) {
                             return Addition::RuneFeature { item.feature_id, item.point };
@@ -514,8 +535,8 @@ struct Tracker::Impl {
                     const auto v = state.rotation_speed;
 
                     const auto text_large_rune = [&] {
-                        return std::format("spd_{}(t)={:+.2f}{:+.2f}*sin({:+.2f}{:+.2f}t), "
-                                           "e={:.3f}",
+                        return std::format(
+                            "spd_{}(t)={:+.2f}{:+.2f}*sin({:+.2f}{:+.2f}t), e={:.3f}",
                             state.update_count, state.sine_v, state.sine_a, state.sine_phase,
                             state.sine_omega, state.prediction_cost);
                     };
@@ -534,56 +555,48 @@ struct Tracker::Impl {
                 }
             }
             for (const auto& [id, model] : robot_models) {
-                // 锁定时，不回传其他的目标
-                if (locked && id != track_genre) {
-                    // 但仍然算分，供后面判断是否存在明显更优目标
-                    if (model.converge()) {
-                        const auto state = model.state();
-                        other_score      = std::min(
-                            other_score, calculate(id, state.get_direction(), model.full()));
-                    }
-                    continue;
-                }
-                if (model.converge()) {
-                    const auto state = model.state();
-                    const auto score = calculate(id, state.get_direction(), model.full());
-                    if (better > score) {
-                        better = score;
-                        result = make_trackable(robot_stamps.at(id), state, id);
+                if (!model.converge()) continue;
 
-                        device = id;
-                    }
-                    std::ranges::copy( // Armor 2d
-                        model.addition().armors, std::back_inserter(addition.tracked2d));
-                    std::ranges::copy( // Armor 3d
-                        model.full(), std::back_inserter(addition.tracked3d));
-                    std::ranges::copy(
-                        model.addition().tracked | std::views::transform([](const auto& item) {
-                            return Addition::Lightbar { item.lightbar_id, item.point };
-                        }),
-                        std::back_inserter(addition.lightbars));
+                const auto state = model.state();
+                const auto score = calculate(id, state.get_direction(), model.full());
 
-                    const auto rv = state.rotation_speed;
-                    const auto vx = state.vx;
-                    const auto vy = state.vy;
-                    addition.infos.push_back({
-                        .text  = std::format("rv: {:+2.2f} | v: {:+2.2f}, {:+2.2f}", rv, vx, vy),
-                        .point = Point3d { state.x, state.y, state.z },
-                    });
-                }
+                // 锁定时，不回传其他的目标，只登记分数供换人判断
+                if (!register_candidate(id, score, robot_stamps.at(id), state)) continue;
+
+                std::ranges::copy( // Armor 2d
+                    model.addition().armors, std::back_inserter(addition.tracked2d));
+                std::ranges::copy( // Armor 3d
+                    model.full(), std::back_inserter(addition.tracked3d));
+                std::ranges::copy(
+                    model.addition().tracked | std::views::transform([](const auto& item) {
+                        return Addition::Lightbar { item.lightbar_id, item.point };
+                    }),
+                    std::back_inserter(addition.lightbars));
+
+                const auto rv = state.rotation_speed;
+                const auto vx = state.vx;
+                const auto vy = state.vy;
+                addition.infos.push_back({
+                    .text  = std::format("rv: {:+2.2f} | v: {:+2.2f}, {:+2.2f}", rv, vx, vy),
+                    .point = Point3d { state.x, state.y, state.z },
+                });
             }
         }
 
-        { // 哨兵：连续拿不到可执行的瞄准，且画面里还有明显更优的目标时，放弃当前锁定
+        { // 哨兵：连续一段时间没有可执行的瞄准，且画面里还有明显更优的目标时，放弃当前锁定
             if (autonomous_mode && aim_intent && track_genre != DeviceId::UNKNOWN) {
                 if (aim_solved) {
                     aim_solved_stamp = timestamp;
                 } else {
-                    // 已锁定时其他候选不参与选择
                     const auto dt = std::chrono::duration<double> { timestamp - aim_solved_stamp };
+                    // 只有登记到更优目标才会解锁，所以这里一定有目标可以换过去，
+                    // 直接在本帧完成切换：locked 是解锁前的旧值，下面的更新分支
+                    // 不会覆盖这次切换，火控本帧就能拿到新目标
                     if (should_unlock(dt.count(), config.fire_timeout_seconds, better, other_score,
                             config.switch_margin)) {
-                        track_genre = DeviceId::UNKNOWN;
+                        track_genre      = other_device;
+                        result           = std::move(other_result);
+                        aim_solved_stamp = timestamp;
                     }
                 }
             }
@@ -633,6 +646,10 @@ auto Tracker::update_camera(const std::array<double, 9>& param) noexcept -> void
 }
 auto Tracker::update_camera(const std::array<double, 5>& param) noexcept -> void {
     pimpl->camera.from(param);
+}
+
+auto Tracker::update_image_size(double width, double height) noexcept -> void {
+    pimpl->image_size = { width, height };
 }
 
 auto Tracker::clean() noexcept -> void { pimpl->clean(); }

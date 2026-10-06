@@ -2,7 +2,7 @@
 
 本文只处理“代码里明确标注过、但还没解决”这一类问题，暂时不处理参数写死、换模型静默失效这种运行时之外的问题，理由见最后一节。
 
-## 问题 1：多目标时选错人
+## 问题 1：多目标选定
 
 ### 现象
 
@@ -113,3 +113,18 @@
 方案 A：接进主流程。先要确定它的输出给谁用，是给云台控制的角速度反馈，还是补自瞄内部的运动补偿。这一步涉及滤波器，需要数学基础。
 
 方案 B：删掉。如果暂时用不上，留在仓库里会让读代码的人以为它正在工作。
+
+## 附：本轮核对中新发现、尚未处理的缺陷
+
+下面几条不属于问题 1 至 6，是核对代码时发现的，先记下来备查。
+
+### 1. 图像边界过滤用的不是图像尺寸（已处理）
+
+`src/kernel/tracker.cpp` 的 `store()` 拿相机内参主点乘二当图像宽高（`camera_matrix[0][2] * 2`、`[1][2] * 2`）。按 `config/config.yaml` 里这组内参算出来是 1402×1129，而实际帧是 1440×1080（`rmcs_msgs::CameraFrame::kWidth` 与 `kHeight`，检测角点已经映射回原图）。`image_margin` 想滤掉贴着画面边缘的装甲板，边界却对不上。
+
+处理方式：把判定式抽象成 `utility/image/frame_bounds.hpp` 的 `within_image_margin` 函数，尺寸由 `auto_aim.cpp` 每帧从实际帧取后经 `Tracker::update_image_size` 传入，并补了 `test/image_margin.cpp`。详见 `progress.md` 第 7 节。
+
+### 2. 前馈输出没有消费方
+
+`/auto_aim/ff_v` 与 `/auto_aim/ff_a` 由 `src/component.cpp` 导出，`rmcs_core` 里没有任何读取点，前馈实际没有进入控制回路。另有一处小的：跟踪目标超时清空时（同文件里 `current_trackable` 过期的分支）只清了 `control_direction` 与 `robot_center`，没有重置这两个输出，会留下上一帧的值。
+

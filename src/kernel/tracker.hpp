@@ -77,6 +77,11 @@ public:
     auto update_camera(const std::array<double, 9>&) noexcept -> void;
     auto update_camera(const std::array<double, 5>&) noexcept -> void;
 
+    /// @brief:
+    ///  设置当前帧的图像尺寸（像素），用于判断装甲板是否贴边。贴边的板可能
+    ///  被画面裁掉一部分，角点不再是真实角点，不应进入滤波器
+    auto update_image_size(double width, double height) noexcept -> void;
+
     auto clean() noexcept -> void;
 
     auto store(std::span<const Armor2d>) -> void;

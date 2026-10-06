@@ -255,6 +255,8 @@ struct AutoAim::Impl {
             tracker->update_track_genre(context.track_ids);
             tracker->update_aim_solved(context.addition.aim_solved);
             tracker->update_camera(iso);
+            // 贴边装甲板的判定需要当前帧的真实尺寸
+            tracker->update_image_size(image_mat.cols, image_mat.rows);
 
             tracker->clean();
             tracker->store(armor2ds);

@@ -106,6 +106,12 @@ target_link_libraries(
     ${OpenCV_LIBRARIES}
 )
 
+# Image margin
+ament_add_gtest(
+    test_image_margin
+    ${TEST_DIR}/image_margin.cpp
+)
+
 # Static TF
 ament_add_gtest(
     test_static_tf

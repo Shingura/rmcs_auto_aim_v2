@@ -48,6 +48,7 @@ tracker:
   fallback_color: BLUE
   # 离开视野的超时时间
   observation_timeout_seconds: 1.5
+  # 装甲板包围盒离画面边界小于该像素数时丢弃
   image_margin: 50
   # 火控无法解算的超时时间
   fire_timeout_seconds: 1.0
