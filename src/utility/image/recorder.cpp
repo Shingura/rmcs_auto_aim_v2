@@ -3,6 +3,10 @@
 
 #include <filesystem>
 #include <format>
+#include <fstream>
+#include <iomanip>
+#include <limits>
+#include <locale>
 #include <memory>
 #include <string>
 #include <utility>
@@ -18,7 +22,10 @@ struct VideoRecorder::Impl {
         FramerateCounter framerate;
         std::size_t fps = 0;
 
-        std::chrono::steady_clock::time_point append_timestamp =
+        // 上一次把帧写进视频的时刻，由构造函数初始化
+        std::chrono::steady_clock::time_point append_timestamp { };
+        // fps 自动测速的起点，仅在未配置 record_fps 时使用
+        std::chrono::steady_clock::time_point measure_timestamp =
             std::chrono::steady_clock::time_point::min();
         std::chrono::steady_clock::time_point opened_timestamp =
             std::chrono::steady_clock::time_point::min();
@@ -26,7 +33,14 @@ struct VideoRecorder::Impl {
         int cols = 0;
         int rows = 0;
 
-        std::filesystem::path path { };
+        // 文件路径
+        std::filesystem::path video_path { };
+
+        std::ofstream pose_stream { };
+        // 已写入视频的帧数
+        std::size_t written_frames            = 0;
+        std::optional<std::string> pose_error = std::nullopt;
+
         bool remove_later = false;
 
         explicit Session(const std::filesystem::path& dir) {
@@ -36,30 +50,41 @@ struct VideoRecorder::Impl {
             const auto our_zone  = std::chrono::locate_zone("Asia/Shanghai");
             const auto zone_time = std::chrono::zoned_time { our_zone, now };
 
-            const auto filename  = std::format("autoaim_{:%Y-%m-%d_%H-%M-%S}.avi", zone_time);
-            const auto file_path = dir / filename;
+            const auto filename = std::format("autoaim_{:%Y-%m-%d_%H-%M-%S}.avi", zone_time);
+            video_path          = dir / filename;
 
-            path = file_path;
+            // 写入间隔从会话开始算起，避免未初始化时间点参与比较
+            append_timestamp = Clock::now();
+        }
+
+        /// @brief 姿态文件路径：与视频同名、同目录，扩展名换成 csv
+        auto pose_path() const -> std::filesystem::path {
+            auto result = video_path;
+            result.replace_extension(".csv");
+            return result;
         }
 
         ~Session() override {
             super::release();
-            if (std::filesystem::exists(path) && remove_later) {
-                std::filesystem::remove(path);
+            pose_stream.close();
+            if (remove_later) {
+                for (const auto& file : { video_path, pose_path() }) {
+                    if (std::filesystem::exists(file)) std::filesystem::remove(file);
+                }
             }
         }
 
-        auto append(const cv::Mat& mat) {
+        auto append(const cv::Mat& mat, const Pose* pose, Clock::time_point timestamp) {
             static const auto kEncode = cv::VideoWriter::fourcc('H', 'F', 'Y', 'U');
             framerate.tick();
 
             const auto now = std::chrono::steady_clock::now();
             if (fps == 0 && !mat.empty()) [[unlikely]] {
-                if (append_timestamp == std::chrono::steady_clock::time_point::min()) {
-                    append_timestamp = now;
+                if (measure_timestamp == std::chrono::steady_clock::time_point::min()) {
+                    measure_timestamp = now;
                 }
                 using namespace std::chrono_literals;
-                if (std::chrono::steady_clock::now() - append_timestamp > 2s) {
+                if (std::chrono::steady_clock::now() - measure_timestamp > 2s) {
                     fps = framerate.fps();
                     fps = fps > 80 ? fps - 20 : fps; // 给 20 帧的冗余
                 }
@@ -72,7 +97,7 @@ struct VideoRecorder::Impl {
             cols = mat.cols;
             rows = mat.rows;
             if (!super::isOpened()) {
-                super::open(path, kEncode, static_cast<double>(fps), { cols, rows });
+                super::open(video_path, kEncode, static_cast<double>(fps), { cols, rows });
                 return;
             }
             using namespace std::chrono_literals;
@@ -81,9 +106,39 @@ struct VideoRecorder::Impl {
             }
             super::write(mat);
             append_timestamp = now;
+
+            ++written_frames;
+            if (pose) write_pose(*pose, timestamp);
         }
 
-        auto filename() const { return path.string(); }
+        /// @brief 把一帧的姿态追加到与视频同名的 csv
+        auto write_pose(const Pose& pose, Clock::time_point timestamp) -> void {
+            if (!pose_stream.is_open()) {
+                const auto csv_path = pose_path();
+
+                pose_stream.imbue(std::locale::classic());
+                pose_stream.open(csv_path, std::ios::out | std::ios::trunc);
+                if (!pose_stream.is_open()) {
+                    pose_error = std::format("姿态文件无法写入：{}", csv_path.string());
+                    return;
+                }
+                pose_stream << "frame_index,timestamp_ns,qw,qx,qy,qz,gx,gy,gz\n";
+                pose_stream << std::setprecision(std::numeric_limits<double>::max_digits10);
+            }
+
+            const auto timestamp_ns =
+                std::chrono::duration_cast<std::chrono::nanoseconds>(timestamp.time_since_epoch())
+                    .count();
+
+            pose_stream << written_frames - 1 << ',' << timestamp_ns << ',' << pose.orientation.w
+                        << ',' << pose.orientation.x << ',' << pose.orientation.y << ','
+                        << pose.orientation.z << ',' << pose.gyro_body.x << ',' << pose.gyro_body.y
+                        << ',' << pose.gyro_body.z << '\n';
+
+            if (written_frames % 64 == 0) pose_stream.flush();
+        }
+
+        auto filename() const { return video_path.string(); }
 
         auto duration() const {
             return std::chrono::duration_cast<std::chrono::seconds>(
@@ -111,7 +166,7 @@ struct VideoRecorder::Impl {
         session = nullptr;
     }
 
-    auto tick(const cv::Mat& mat) -> void {
+    auto tick(const cv::Mat& mat, const Pose* pose, Clock::time_point timestamp) -> void {
         if (!session) {
             return;
         }
@@ -122,7 +177,7 @@ struct VideoRecorder::Impl {
             stop(true);
             return;
         }
-        session->append(mat);
+        session->append(mat, pose, timestamp);
     }
 
     auto start() -> std::expected<void, std::string> {
@@ -179,14 +234,26 @@ struct VideoRecorder::Impl {
         if (stop_reason) {
             return *stop_reason;
         }
-        return session ? std::format("录制中，当前文件为 {}", session->filename())
-                       : std::format("未开始录制");
+        if (!session) {
+            return std::format("未开始录制");
+        }
+        if (session->pose_error) {
+            return std::format(
+                "录制中，当前文件为 {}（{}）", session->filename(), *session->pose_error);
+        }
+        return std::format("录制中，当前文件为 {}", session->filename());
     }
 };
 
 auto VideoRecorder::update_config(Config config) -> void { pimpl->config = std::move(config); }
 
-auto VideoRecorder::tick(const cv::Mat& mat, Clock::time_point) -> void { pimpl->tick(mat); }
+auto VideoRecorder::tick(const cv::Mat& mat, Clock::time_point timestamp) -> void {
+    pimpl->tick(mat, nullptr, timestamp);
+}
+
+auto VideoRecorder::tick(const cv::Mat& mat, const Pose& pose, Clock::time_point timestamp) -> void {
+    pimpl->tick(mat, &pose, timestamp);
+}
 
 auto VideoRecorder::start() -> std::expected<void, std::string> { return pimpl->start(); }
 

@@ -122,7 +122,7 @@
 
 `src/kernel/tracker.cpp` 的 `store()` 拿相机内参主点乘二当图像宽高（`camera_matrix[0][2] * 2`、`[1][2] * 2`）。按 `config/config.yaml` 里这组内参算出来是 1402×1129，而实际帧是 1440×1080（`rmcs_msgs::CameraFrame::kWidth` 与 `kHeight`，检测角点已经映射回原图）。`image_margin` 想滤掉贴着画面边缘的装甲板，边界却对不上。
 
-处理方式：把判定式抽象成 `utility/image/frame_bounds.hpp` 的 `within_image_margin` 函数，尺寸由 `auto_aim.cpp` 每帧从实际帧取后经 `Tracker::update_image_size` 传入，并补了 `test/image_margin.cpp`。详见 `progress.md` 第 7 节。
+处理方式：把判定式抽象成 `utility/image/frame_bounds.hpp` 的 `within_image_margin` 函数，尺寸由 `auto_aim.cpp` 每帧从实际帧取后经 `Tracker::update_image_size` 传入，并补了 `test/image_margin.cpp`。详见 `progress.md` 第 6 节。
 
 ### 2. 前馈输出没有消费方
 

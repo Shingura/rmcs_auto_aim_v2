@@ -29,21 +29,25 @@ public:
     };
     auto update_config(Config) -> void;
 
-    /// @TODO:
-    ///  融合时间戳与位姿状态的录制
-    ///  预计是生成一个与视频同名的 csv 文件
+    /// @brief 一帧的云台姿态快照
+    struct Pose {
+        // 曝光时刻云台在 OdomImu 坐标系下的姿态
+        Orientation orientation { };
+        // 同一时刻的机身角速度
+        Vector3d gyro_body { };
+    };
+
+    /// @brief 只录制一帧画面，不记录姿态，不产生 csv
     auto tick(const cv::Mat&, Clock::time_point = Clock::now()) -> void;
-    auto tick(const std::string& key, const std::string& data, Clock::time_point = Clock::now())
-        -> void;
 
-    auto tick_camera_pose(const Transform& t, Clock::time_point timestamp = Clock::now()) {
-        const auto [tx, ty, tz]     = t.translation;
-        const auto [qx, qy, qz, qw] = t.orientation;
-
-        const auto data = std::format("({}, {}, {}), ({}, {}, {}, {})", tx, ty, tz, qx, qy, qz, qw);
-
-        tick("camera_pose", data, timestamp);
-    }
+    /// @brief 录制一帧画面，同时记录这一帧的姿态，产生 csv
+    ///
+    /// @NOTE:
+    ///  每写入一帧视频，就在与视频同名的 csv 里追加一行，列为
+    ///  `frame_index,timestamp_ns,qw,qx,qy,qz,gx,gy,gz`。
+    ///  frame_index 从 0 开始，csv 的第 N 行与视频的第 N 帧
+    ///  一一对应，回放侧据此把姿态还原到每一帧上。
+    auto tick(const cv::Mat&, const Pose&, Clock::time_point = Clock::now()) -> void;
 
     auto start() -> std::expected<void, std::string>;
     auto stop(bool save = true) -> void;

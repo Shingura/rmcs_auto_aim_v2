@@ -106,23 +106,7 @@
 
 结论是仓库里查不到问题是什么，要确定只能打开它和现状对比，这不在当前能做的范围内。
 
-## 6. 锁定时切换目标的两处缺陷
-
-这一节只改 `src/kernel/tracker.cpp` 选目标的那一段。
-
-### 6.1 前哨站与大符不参与换目标比较
-
-`other_score`（锁定时其他候选里的最好分数）原来只在遍历机器人模型的循环里更新。前哨站与大符各自被 `!locked || track_genre == ...` 挡在选择之外，也就进不了这份比较。后果是哨兵锁在机器人上时，画面里的前哨站再合适也换不过去；锁在前哨站上时，大符同样不参与比较。
-
-改法是把「候选是否参与选择」与「候选是否要登记分数」拆开：新增 `register_candidate`，锁定时除锁定目标以外的候选只登记分数与目标本体，其余情况照旧参与选择。前哨站与大符两个分支去掉外层门，统一交给它判断，调试信息的填充条件与改动前保持一致。
-
-### 6.2 解锁当帧不能立刻换人
-
-解锁判定读的是选目标之前就算好的 `locked`，解锁那一帧 `if (!locked)` 不成立：`track_genre` 已经清空，但 `result` 仍然是旧目标的 trackable，新目标要等下一帧才写得进去。
-
-登记候选时把目标本体一起留了下来（`other_device` 与 `other_result`）。`should_unlock` 成立的前提是存在更优候选，所以解锁分支里一定有目标可换：直接写 `track_genre` 与 `result`，并按「目标切换时重置起点」的约定重置火控解算计时（`fire_timeout_seconds` 的起点），火控在这一帧就能拿到新目标。
-
-## 7. 图像边界过滤的边界位置错误
+## 6. 图像边界过滤的边界位置错误
 
 `src/kernel/tracker.cpp` 的 `Tracker::Impl::store(std::span<const Armor2d>)` 用相机内参主点乘二当图像宽高（`camera_matrix[0][2] * 2` 与 `[1][2] * 2`），配置里这组内参算出来是 1402×1129，而实际帧是 1440×1080（`rmcs_msgs::CameraFrame` 的约定尺寸，检测角点已经映射回原图）。
 
@@ -138,4 +122,14 @@
 - `src/kernel/auto_aim.cpp`：每帧在 `store` 之前用当前帧的真实尺寸调用 `update_image_size`。
 - `config/config.yaml`：给 `image_margin` 补上说明。
 - `test/image_margin.cpp`：新增 7 项测试，覆盖贴边、正好等于边距、坐标越界、尺寸未知，另加两条修复前后的对照（下边缘门槛 1030 对 1079.2，右边门槛 1390 对 1352.6）。
+
+## 7. 录像器记录每一帧的姿态（问题 5 第一步）
+
+`src/utility/image/recorder.{hpp,cpp}`：新增带姿态的 `tick(图, 姿态, 时间)` 重载。每写入一帧视频，就在与视频同名的 csv 里追加一行 `frame_index,timestamp_ns,qw,qx,qy,qz,gx,gy,gz`，且只统计真正写进视频的帧，因此 csv 的第 N 行对应视频的第 N 帧，回放侧据此把姿态还原到每一帧上。不带姿态的 `tick(图, 时间)` 保留，不产生 csv。同时删掉两处死代码：只有声明没有定义的 `tick(key, data, 时间)`，以及一调用就会链接失败的 `tick_camera_pose`。
+
+`test/recorder_pose.cpp`：检查表头、行数等于视频帧数、帧号连续、每行的四元数与角速度等于写入时传入的值。
+
+顺手修掉一个既有隐患：`Session::append_timestamp` 原来以 `time_point::min()` 初始化，而配置了 `record_fps` 时它在第一次比较之前不会被赋值，`now - min()` 在 int64 上溢出。现在拆成两个变量：`append_timestamp` 在构造函数里初始化为当前时间，只负责写入间隔；`measure_timestamp` 保留 `min()`，只作为 fps 自动测速的哨兵。
+
+待续：采集组件接入录像（独立线程写盘）、回放组件按帧号读取姿态。
 

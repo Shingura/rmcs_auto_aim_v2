@@ -112,6 +112,17 @@ ament_add_gtest(
     ${TEST_DIR}/image_margin.cpp
 )
 
+# Video recorder pose csv
+ament_add_gtest(
+    test_recorder_pose
+    ${TEST_DIR}/recorder_pose.cpp
+    ${RMCS_SRC_DIR}/utility/image/recorder.cpp
+)
+target_link_libraries(
+    test_recorder_pose
+    ${OpenCV_LIBRARIES}
+)
+
 # Static TF
 ament_add_gtest(
     test_static_tf
