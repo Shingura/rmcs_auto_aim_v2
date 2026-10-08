@@ -143,3 +143,15 @@
 
 未验证的部分：这里没有相机，录像能否真正产出 avi 与同名 csv、丢帧计数是否合理，要在实机上跑一次。
 
+## 9. 回放组件读回姿态（问题 5 第三步）
+
+`src/utility/image/pose_csv.{hpp,cpp}`：新增姿态 csv 的读取，以及按帧号查一条。行号与帧号不一致、或超出范围时返回空，调用方据此判断这份 csv 是否属于这个视频。
+
+`src/io/recorder/video_player.cpp`：新增参数 `pose_csv`；留空时自动找与视频同名的 csv；启动时加载；发第 N 帧时取第 N 行，填进 `imu_snapshot` 与 `gyro_body`；行数不够时沿用上一条姿态并警告一次；循环重放时帧号归零。
+
+`config/executor.yaml`：`auto_aim_video_player` 增加 `pose_csv` 的说明。
+
+`test/pose_csv.cpp`：6 项测试，覆盖顺序读取、列数不符、文件缺失、按帧号取值、越界、行号不符。
+
+至此问题 5 的代码改动完成（录像器记录姿态、采集组件接入录像、回放组件读回姿态），剩下实机端到端验证。
+
